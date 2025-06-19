@@ -144,6 +144,47 @@ export const createTempMessages = (
   }
 }
 
+export const handleMCPChat = async (
+  payload: ChatPayload,
+  profile: Tables<"profiles">,
+  chatSettings: ChatSettings,
+  tempAssistantMessage: ChatMessage,
+  isRegeneration: boolean,
+  newAbortController: AbortController,
+  setIsGenerating: React.Dispatch<React.SetStateAction<boolean>>,
+  setFirstTokenReceived: React.Dispatch<React.SetStateAction<boolean>>,
+  setChatMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>,
+  setToolInUse: React.Dispatch<React.SetStateAction<string>>
+) => {
+  const formattedMessages = await buildFinalMessages(payload, profile!, [])
+
+  const requestBody = {
+    chatSettings: chatSettings,
+    messages: formattedMessages
+  }
+
+  const response = await fetchChatResponse(
+    "/api/chat/mcp",
+    requestBody,
+    true,
+    newAbortController,
+    setIsGenerating,
+    setChatMessages
+  )
+
+  return await processResponse(
+    response,
+    isRegeneration
+      ? payload.chatMessages[payload.chatMessages.length - 1]
+      : tempAssistantMessage,
+    true,
+    newAbortController,
+    setFirstTokenReceived,
+    setChatMessages,
+    setToolInUse
+  )
+}
+
 export const handleLocalChat = async (
   payload: ChatPayload,
   profile: Tables<"profiles">,
@@ -208,9 +249,12 @@ export const handleHostedChat = async (
 
   let draftMessages = await buildFinalMessages(payload, profile, chatImages)
 
-  let formattedMessages : any[] = []
+  let formattedMessages: any[] = []
   if (provider === "google") {
-    formattedMessages = await adaptMessagesForGoogleGemini(payload, draftMessages)
+    formattedMessages = await adaptMessagesForGoogleGemini(
+      payload,
+      draftMessages
+    )
   } else {
     formattedMessages = draftMessages
   }
@@ -254,6 +298,7 @@ export const fetchChatResponse = async (
   setIsGenerating: React.Dispatch<React.SetStateAction<boolean>>,
   setChatMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>
 ) => {
+  console.log(body)
   const response = await fetch(url, {
     method: "POST",
     body: JSON.stringify(body),
@@ -294,6 +339,7 @@ export const processResponse = async (
     await consumeReadableStream(
       response.body,
       chunk => {
+        console.log("chunk", chunk)
         setFirstTokenReceived(true)
         setToolInUse("none")
 
@@ -314,6 +360,7 @@ export const processResponse = async (
           fullText += contentToAdd
         } catch (error) {
           console.error("Error parsing JSON:", error)
+          console.error("Error parsing JSON chunk:", chunk)
         }
 
         setChatMessages(prev =>

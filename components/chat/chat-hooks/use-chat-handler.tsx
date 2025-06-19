@@ -15,6 +15,7 @@ import {
   createTempMessages,
   handleCreateChat,
   handleCreateMessages,
+  handleMCPChat,
   handleHostedChat,
   handleLocalChat,
   handleRetrieval,
@@ -66,7 +67,9 @@ export const useChatHandler = () => {
     models,
     isPromptPickerOpen,
     isFilePickerOpen,
-    isToolPickerOpen
+    isToolPickerOpen,
+    useMCP,
+    setUseMCP
   } = useContext(ChatbotUIContext)
 
   const chatInputRef = useRef<HTMLTextAreaElement>(null)
@@ -272,7 +275,25 @@ export const useChatHandler = () => {
 
       let generatedText = ""
 
-      if (selectedTools.length > 0) {
+      // setUseMCP(true)
+      // console.log("useMCP", useMCP)
+      // console.log("model provider", modelData!.provider)
+      if (modelData!.provider === "ollama") {
+        // if (false) {
+        console.log("in useMCP")
+        generatedText = await handleMCPChat(
+          payload,
+          profile!,
+          chatSettings!,
+          tempAssistantChatMessage,
+          isRegeneration,
+          newAbortController,
+          setIsGenerating,
+          setFirstTokenReceived,
+          setChatMessages,
+          setToolInUse
+        )
+      } else if (selectedTools.length > 0) {
         setToolInUse("Tools")
 
         const formattedMessages = await buildFinalMessages(
