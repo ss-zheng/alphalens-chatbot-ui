@@ -1,13 +1,17 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js"
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import fs from "fs/promises"
 import path from "path"
 import ollama from "ollama"
 import { ChatSettings } from "@/types"
 
 interface MCPServer {
-  type: "sse"
-  url: string
+  type: "sse" | "stdio"
+  url?: string
+  command?: string
+  args?: string[]
+  env?: Record<string, string>
 }
 
 interface MCPConfig {
@@ -15,18 +19,15 @@ interface MCPConfig {
 }
 
 export class MCPClient {
-  private client: Client
+  private clients: Map<string, Client> = new Map()
   private connectedServers: string[] = []
   private mcpToolMap = new Map<
     string,
-    { name: string; description: string; inputSchema: any }
+    { name: string; description: string; inputSchema: any; serverName: string }
   >()
 
   constructor() {
-    this.client = new Client({
-      name: "alphalens-chatbot-ui",
-      version: "1.0.0"
-    })
+    // We'll create client instances per server
   }
 
   async initialize(): Promise<void> {
@@ -41,22 +42,44 @@ export class MCPClient {
       string,
       MCPServer
     ][]) {
+      const client = new Client({
+        name: "alphalens-mcp-client" + name,
+        version: "1.0.0"
+      })
       try {
-        if (serverInfo.type !== "sse") {
-          throw new Error(
-            `Only SSE transport is supported. Server ${name} uses ${serverInfo.type}`
+        if (serverInfo.type === "sse") {
+          if (!serverInfo.url) {
+            throw new Error(`URL is required for SSE server: ${name}`)
+          }
+
+          console.log(`Connecting to MCP server: ${name} at ${serverInfo.url}`)
+          const transport = new SSEClientTransport(new URL(serverInfo.url))
+          await client.connect(transport)
+          this.clients.set(name, client)
+          this.connectedServers.push(name)
+          console.log(`✅ Connected to MCP server: ${name}`)
+        } else if (serverInfo.type === "stdio") {
+          if (!serverInfo.command || !serverInfo.args) {
+            throw new Error(
+              `Command and args are required for stdio server: ${name}`
+            )
+          }
+
+          console.log(
+            `Connecting to MCP server: ${name} with command: ${serverInfo.command} and args: ${serverInfo.args.join(", ")}`
           )
+          const transport = new StdioClientTransport({
+            command: serverInfo.command,
+            args: serverInfo.args,
+            env: serverInfo.env
+          })
+          await client.connect(transport)
+          this.clients.set(name, client)
+          this.connectedServers.push(name)
+          console.log(`✅ Connected to MCP server: ${name}`)
+        } else {
+          throw new Error(`Unsupported server type: ${serverInfo.type}`)
         }
-
-        if (!serverInfo.url) {
-          throw new Error(`URL is required for SSE server: ${name}`)
-        }
-
-        console.log(`Connecting to MCP server: ${name} at ${serverInfo.url}`)
-        const transport = new SSEClientTransport(new URL(serverInfo.url))
-        await this.client.connect(transport)
-        this.connectedServers.push(name)
-        console.log(`✅ Connected to MCP server: ${name}`)
       } catch (error) {
         console.error(`Failed to connect to MCP server ${name}:`, error)
         throw new Error(
@@ -76,42 +99,48 @@ export class MCPClient {
 
   private async initializeTools(): Promise<void> {
     try {
-      const tools = await this.client.listTools()
-      console.log("Tools type:", typeof tools)
-      console.log("Tools is array:", Array.isArray(tools))
+      // Collect tools from all connected servers
+      for (const [serverName, client] of this.clients.entries()) {
+        console.log(`Listing tools from server: ${serverName}`)
+        const tools = await client.listTools()
+        console.log(`Tools from ${serverName} type:`, typeof tools)
+        console.log(`Tools from ${serverName} is array:`, Array.isArray(tools))
 
-      // Handle different possible return types
-      let toolsArray: any[] = []
+        // Handle different possible return types
+        let toolsArray: any[] = []
 
-      if (Array.isArray(tools)) {
-        toolsArray = tools
-      } else if (tools && typeof tools === "object") {
-        // If it's an object, try to extract tools from it
-        if (tools.tools && Array.isArray(tools.tools)) {
-          toolsArray = tools.tools
-        } else if (tools.result && Array.isArray(tools.result)) {
-          toolsArray = tools.result
+        if (Array.isArray(tools)) {
+          toolsArray = tools
+        } else if (tools && typeof tools === "object") {
+          // If it's an object, try to extract tools from it
+          if (tools.tools && Array.isArray(tools.tools)) {
+            toolsArray = tools.tools
+          } else if (tools.result && Array.isArray(tools.result)) {
+            toolsArray = tools.result
+          } else {
+            // Try to convert object to array
+            toolsArray = Object.values(tools)
+          }
         } else {
-          // Try to convert object to array
-          toolsArray = Object.values(tools)
+          console.warn(`Unexpected tools format from ${serverName}:`, tools)
+          toolsArray = []
         }
-      } else {
-        console.warn("Unexpected tools format:", tools)
-        toolsArray = []
-      }
 
-      // Process tools for Ollama format
-      for (const tool of toolsArray) {
-        if (tool && typeof tool === "object" && tool.name) {
-          this.mcpToolMap.set(tool.name, {
-            name: tool.name,
-            description: tool.description || "",
-            inputSchema: tool.inputSchema
-          })
+        // Process tools for Ollama format
+        for (const tool of toolsArray) {
+          if (tool && typeof tool === "object" && tool.name) {
+            this.mcpToolMap.set(tool.name, {
+              name: tool.name,
+              description: tool.description || "",
+              inputSchema: tool.inputSchema,
+              serverName: serverName
+            })
+          }
         }
       }
 
       console.log("Processed tools count:", this.mcpToolMap.size)
+      console.log("Available tools:", Array.from(this.mcpToolMap.keys()))
     } catch (error) {
       console.error("Failed to list MCP tools:", error)
       throw new Error(`Failed to list MCP tools: ${(error as Error).message}`)
@@ -167,8 +196,14 @@ export class MCPClient {
       }
 
       try {
+        // Get the client for this tool's server
+        const client = this.clients.get(mcpTool.serverName)
+        if (!client) {
+          throw new Error(`Client for server ${mcpTool.serverName} not found`)
+        }
+
         // Call the MCP tool
-        const result = await this.client.callTool({
+        const result = await client.callTool({
           name: functionName,
           arguments: parsedArgs
         })
@@ -214,6 +249,12 @@ export class MCPClient {
     chatSettings: ChatSettings,
     messages: any[]
   ): Promise<ReadableStream<Uint8Array>> {
+    console.log(
+      "MCP Client received messages:",
+      JSON.stringify(messages, null, 2)
+    )
+    console.log("Number of messages received:", messages.length)
+
     const allTools = this.getOllamaTools()
     const self = this // Capture the context
 
@@ -221,12 +262,20 @@ export class MCPClient {
       async start(controller) {
         try {
           let currentMessages = [...messages]
+          console.log(
+            "Current messages at start:",
+            JSON.stringify(currentMessages, null, 2)
+          )
           let iterationCount = 0
           const maxIterations = 10 // Prevent infinite loops
 
           while (iterationCount < maxIterations) {
             iterationCount++
             console.log(`Chat iteration ${iterationCount}`)
+            console.log(
+              `Messages being sent to Ollama:`,
+              JSON.stringify(currentMessages, null, 2)
+            )
 
             // Call Ollama to get response and potential tool calls
             const response = await ollama.chat({
@@ -234,7 +283,8 @@ export class MCPClient {
               messages: currentMessages,
               tools: allTools.length > 0 ? allTools : undefined,
               stream: true,
-              think: false,
+              think: true,
+              keep_alive: "1.5h",
               options: {
                 temperature: chatSettings.temperature
               }

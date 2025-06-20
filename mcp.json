@@ -1,8 +1,23 @@
 {
   "mcpServers": {
+    "mcp-server-chart": {
+        "type": "stdio",
+        "command": "npx",
+        "args": [
+            "-y",
+            "@antv/mcp-server-chart"
+        ]
+    },
     "sec-edgar": {
         "type": "sse",
         "url": "https://danzss-sec-edgar-mcp.hf.space/gradio_api/mcp/sse"
+    },
+    "fetch": {
+        "type": "stdio",
+        "command": "uvx",
+        "args": [
+            "mcp-server-fetch"
+        ]
     }
   }
 }

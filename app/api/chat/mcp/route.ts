@@ -15,6 +15,9 @@ export async function POST(request: Request) {
   const json = await request.json()
   const { chatSettings, messages } = json as MCPRequest
 
+  console.log("MCP Route received messages:", JSON.stringify(messages, null, 2))
+  console.log("MCP Route number of messages:", messages.length)
+
   try {
     // TODO: augment this function to use different LLM client based on chatSettings.model
     // const profile = await getServerProfile()
