@@ -339,7 +339,6 @@ export const processResponse = async (
     await consumeReadableStream(
       response.body,
       chunk => {
-        console.log("chunk", chunk)
         setFirstTokenReceived(true)
         setToolInUse("none")
 
