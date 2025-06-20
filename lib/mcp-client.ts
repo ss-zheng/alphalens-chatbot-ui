@@ -138,7 +138,8 @@ export class MCPClient {
 
   private async executeToolCalls(
     toolCalls: any[],
-    messages: any[]
+    messages: any[],
+    controller?: ReadableStreamDefaultController<Uint8Array>
   ): Promise<void> {
     for (const toolCall of toolCalls) {
       const functionCall = toolCall.function
@@ -172,6 +173,12 @@ export class MCPClient {
           arguments: parsedArgs
         })
 
+        // Stream tool result to the user
+        if (controller) {
+          const toolResult = `**Tool Result (${functionName}):**\n\`\`\`json\n${JSON.stringify(result, null, 2)}\n\`\`\`\n\n`
+          controller.enqueue(new TextEncoder().encode(toolResult))
+        }
+
         messages.push({
           role: "tool",
           name: functionName,
@@ -179,6 +186,19 @@ export class MCPClient {
         })
       } catch (error) {
         console.error(`Error calling MCP tool ${functionName}:`, error)
+
+        // Stream error to the user
+        if (controller) {
+          const errorResult = `**Tool Error (${functionName}):**\n\`\`\`json\n${JSON.stringify(
+            {
+              error: `Failed to execute tool ${functionName}: ${(error as Error).message}`
+            },
+            null,
+            2
+          )}\n\`\`\`\n\n`
+          controller.enqueue(new TextEncoder().encode(errorResult))
+        }
+
         messages.push({
           role: "tool",
           name: functionName,
@@ -241,8 +261,13 @@ export class MCPClient {
               break
             }
 
+            // Stream tool call information to the user
+            const toolCallInfo = `\n\n**Tool Calls:**\n\`\`\`json\n${JSON.stringify(toolCalls, null, 2)}\n\`\`\`\n\n`
+            controller.enqueue(new TextEncoder().encode(toolCallInfo))
+            message.content += toolCallInfo
+
             // Execute tool calls
-            await self.executeToolCalls(toolCalls, currentMessages)
+            await self.executeToolCalls(toolCalls, currentMessages, controller)
           }
 
           controller.close()
